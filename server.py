@@ -21,20 +21,25 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
+    # mcp 1.x
     from mcp.server.fastmcp import FastMCP
 except ImportError:
-    # Graceful fallback stub when mcp is not yet installed in the environment
-    class FastMCP:  # type: ignore
-        def __init__(self, name: str):
-            self.name = name
+    try:
+        # mcp 2.x
+        from mcp.server.mcpserver import MCPServer as FastMCP
+    except ImportError:
+        # Graceful fallback stub when mcp is not yet installed in the environment
+        class FastMCP:  # type: ignore
+            def __init__(self, name: str):
+                self.name = name
 
-        def tool(self):
-            def decorator(func):
-                return func
-            return decorator
+            def tool(self):
+                def decorator(func):
+                    return func
+                return decorator
 
-        def run(self, *args, **kwargs):
-            print(f"FastMCP '{self.name}' initialized. Run 'pip install -r requirements.txt' to enable full MCP server.")
+            def run(self, *args, **kwargs):
+                print(f"FastMCP '{self.name}' initialized. Run 'pip install -r requirements.txt' to enable full MCP server.")
 
 # Initialize FastMCP server
 mcp = FastMCP("macos-wifi-troubleshooter")
