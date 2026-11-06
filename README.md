@@ -5,7 +5,7 @@ It uses native macOS terminal commands to detect slowdowns, interference, and in
 
 ## Features
 
-- **Zero-Configuration Persona**: Dictates LLM tone directly through tool docstrings and runtime response directives.
+- **Built-in IT Persona**: No custom system prompt needed—embedded directives automatically guide the AI to speak like a calm, patient, and friendly support specialist.
 - **Jargon-Free Advice**: Translates complex networking metrics into plain, friendly explanations anyone can understand.
 - **Hotspot Fallback Awareness**: Automatically detects iPhone personal hotspots (`172.20.10.1`) and prevents false home router alarms.
 - **Native macOS Commands**: Uses built-in system tools (`nettop`, `airport`, `networkquality`, `route`, `ping`, and `dig`).
