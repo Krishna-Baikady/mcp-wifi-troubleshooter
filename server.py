@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Automated macOS Network Troubleshooter MCP Server.
 
-A zero-configuration Model Context Protocol (MCP) server that empowers LLMs to
-diagnose and resolve macOS Wi-Fi and network issues using native system tools.
+An experimental hobby project built to diagnose and fix home network issues,
+providing meaningful, actionable insights using native macOS system tools.
 
 Employs the 'Trojan Horse' docstring pattern and 'LLM Directive' response pattern
-to force the LLM into a friendly, patient, jargon-free IT technician persona.
+to guide the LLM into a friendly, patient, jargon-free IT technician persona.
 """
 
 from __future__ import annotations
@@ -594,9 +594,22 @@ def scan_wifi_congestion() -> str:
             "location" in (stderr + stdout).lower()
             or "permission" in (stderr + stdout).lower()
             or "not permitted" in (stderr + stdout).lower()
-            or (code != 0 and not stdout.strip())
         )
-        if not loc_denied and code == 0 and stdout.strip():
+        if loc_denied:
+            raw_data = {
+                "error": "Location Services permission denied or unavailable",
+                "stderr": stderr.strip(),
+                "exit_code": code,
+            }
+            directive_parts.append(
+                "Explain to the user that macOS requires Location Services permission to scan nearby "
+                "Wi-Fi networks. Give them simple, numbered steps: Open System Settings > Privacy & "
+                "Security > Location Services, ensure Location Services is turned On, and ensure "
+                "Terminal (or their current app) is allowed."
+            )
+            return json.dumps({"raw_data": raw_data, "_llm_directive": " ".join(directive_parts)}, indent=2)
+
+        if code == 0 and stdout.strip():
             scanned_via_airport = True
             pattern = re.compile(r"([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})\s+([-\d]+)\s+([0-9,\+-]+)")
             for line in stdout.splitlines():
