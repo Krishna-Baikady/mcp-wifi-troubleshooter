@@ -1,7 +1,7 @@
 # macOS Wi-Fi Troubleshooter MCP Server
 
 > [!NOTE]
-> **Experimental Hobby Project**: This is an experimental hobby project built to fix home network issues and surface meaningful, actionable insights using native macOS tools and LLM-guided diagnostics.
+> **Experimental Hobby Project**: This is an experimental hobby project built to identify home network issues and surface meaningful, actionable insights using native macOS tools and LLM-guided diagnostics.
 
 A zero-configuration Model Context Protocol (MCP) server for automated macOS network diagnostics.
 It uses native macOS terminal commands to detect slowdowns, interference, and internet outages, translating raw technical data into practical steps anyone can take to fix their home network.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Automated macOS Network Troubleshooter MCP Server.
 
-An experimental hobby project built to diagnose and fix home network issues,
+An experimental hobby project built to identify home network issues,
 providing meaningful, actionable insights using native macOS system tools.
 
 Employs the 'Trojan Horse' docstring pattern and 'LLM Directive' response pattern
