@@ -113,6 +113,90 @@ def get_airport_binary() -> Optional[str]:
     return None
 
 
+def get_system_profiler_wifi_data() -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Retrieves current Wi-Fi metrics and neighboring networks via system_profiler SPAirPortDataType -json."""
+    code, stdout, _, _ = run_command(["system_profiler", "SPAirPortDataType", "-json"], timeout=10)
+    if code != 0 or not stdout:
+        return None, []
+
+    current_metrics: Optional[Dict[str, Any]] = None
+    other_networks: List[Dict[str, Any]] = []
+
+    try:
+        data = json.loads(stdout)
+        interfaces = data.get("SPAirPortDataType", [{}])[0].get("spairport_airport_interfaces", [])
+        for iface in interfaces:
+            cur = iface.get("spairport_current_network_information")
+            if cur and cur.get("_name") and not current_metrics:
+                ssid = cur.get("_name")
+                sig_noise = cur.get("spairport_signal_noise", "")
+                rssi, noise = -100, -90
+                if "/" in sig_noise:
+                    parts = sig_noise.split("/")
+                    rssi_m = re.search(r"(-?\d+)", parts[0])
+                    noise_m = re.search(r"(-?\d+)", parts[1])
+                    if rssi_m:
+                        rssi = int(rssi_m.group(1))
+                    if noise_m:
+                        noise = int(noise_m.group(1))
+
+                channel_str = cur.get("spairport_network_channel", "")
+                ch_m = re.search(r"^(\d+)", channel_str)
+                primary_ch = int(ch_m.group(1)) if ch_m else 0
+
+                if primary_ch <= 14:
+                    band = "2.4 GHz"
+                elif 36 <= primary_ch <= 177:
+                    band = "5 GHz"
+                elif primary_ch > 177:
+                    band = "6 GHz (Wi-Fi 6E/7)"
+                else:
+                    band = "5 GHz" if "5ghz" in channel_str.lower() else ("2.4 GHz" if "2ghz" in channel_str.lower() else "Unknown")
+
+                try:
+                    tx_rate = float(cur.get("spairport_network_rate", 0))
+                except (ValueError, TypeError):
+                    tx_rate = 0.0
+
+                current_metrics = {
+                    "ssid": ssid,
+                    "bssid": iface.get("spairport_wireless_mac_address", ""),
+                    "state": "running",
+                    "rssi_dbm": rssi,
+                    "noise_dbm": noise,
+                    "snr_db": rssi - noise,
+                    "tx_rate_mbps": tx_rate,
+                    "channel": channel_str,
+                    "primary_channel": primary_ch,
+                    "band": band,
+                }
+
+            others = iface.get("spairport_airport_other_local_wireless_networks", [])
+            for net in others:
+                other_ssid = net.get("_name", "<Hidden SSID>")
+                other_chan_str = net.get("spairport_network_channel", "")
+                ch_match = re.search(r"^(\d+)", other_chan_str)
+                ch_val = int(ch_match.group(1)) if ch_match else 0
+
+                other_sig_noise = net.get("spairport_signal_noise", "")
+                other_rssi = -100
+                if other_sig_noise:
+                    m = re.search(r"(-?\d+)", other_sig_noise)
+                    if m:
+                        other_rssi = int(m.group(1))
+
+                other_networks.append({
+                    "ssid": other_ssid,
+                    "bssid": "",
+                    "rssi": other_rssi,
+                    "channel": ch_val,
+                })
+    except Exception:
+        pass
+
+    return current_metrics, other_networks
+
+
 def get_current_wifi_details() -> Dict[str, Any]:
     """Retrieves current Wi-Fi status using airport -I with fallbacks."""
     airport_bin = get_airport_binary()
@@ -124,14 +208,20 @@ def get_current_wifi_details() -> Dict[str, Any]:
                 if ":" in line:
                     k, v = line.split(":", 1)
                     parsed[k.strip()] = v.strip()
-            return parsed
-    
+            if parsed.get("SSID"):
+                return parsed
+
+    # Fallback to system_profiler
+    sp_metrics, _ = get_system_profiler_wifi_data()
+    if sp_metrics:
+        return {"SSID": sp_metrics.get("ssid", ""), "state": sp_metrics.get("state", "running")}
+
     # Fallback to networksetup for SSID if airport is missing (e.g. newer macOS)
     code, stdout, _, _ = run_command(["networksetup", "-getairportnetwork", "en0"], timeout=5)
     if code == 0 and "Current Wi-Fi Network:" in stdout:
         ssid = stdout.split("Current Wi-Fi Network:", 1)[1].strip()
         return {"SSID": ssid, "state": "running"}
-    
+
     return {}
 
 
@@ -323,13 +413,85 @@ def get_wifi_metrics() -> str:
     raw_data: Dict[str, Any] = {}
     directive_parts: List[str] = []
 
-    # Fallback if airport is completely unavailable
-    if not airport_bin:
+    parsed_metrics: Optional[Dict[str, Any]] = None
+
+    if airport_bin:
+        code, stdout, stderr, err = run_command([airport_bin, "-I"], timeout=10)
+        if code == 0 and stdout.strip():
+            metrics: Dict[str, str] = {}
+            for line in stdout.splitlines():
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    metrics[k.strip()] = v.strip()
+
+            state = metrics.get("state", "unknown")
+            ssid = metrics.get("SSID", "")
+            bssid = metrics.get("BSSID", "")
+
+            try:
+                rssi = int(metrics.get("agrCtlRSSI", metrics.get("RSSI", "-100")))
+            except ValueError:
+                rssi = -100
+
+            try:
+                noise = int(metrics.get("agrCtlNoise", metrics.get("Noise", "-90")))
+            except ValueError:
+                noise = -90
+
+            try:
+                tx_rate = float(metrics.get("lastTxRate", "0"))
+            except ValueError:
+                tx_rate = 0.0
+
+            channel_raw = metrics.get("channel", "unknown")
+            channel_match = re.match(r"(\d+)", channel_raw)
+            primary_channel = int(channel_match.group(1)) if channel_match else 0
+
+            if primary_channel <= 14:
+                band = "2.4 GHz"
+            elif 36 <= primary_channel <= 177:
+                band = "5 GHz"
+            elif primary_channel > 177:
+                band = "6 GHz (Wi-Fi 6E/7)"
+            else:
+                band = "Unknown"
+
+            if ssid:
+                parsed_metrics = {
+                    "ssid": ssid,
+                    "bssid": bssid,
+                    "state": state,
+                    "rssi": rssi,
+                    "noise": noise,
+                    "tx_rate": tx_rate,
+                    "channel_raw": channel_raw,
+                    "primary_channel": primary_channel,
+                    "band": band,
+                }
+
+    # Fallback to system_profiler if airport is unavailable or failed (e.g. macOS Sonoma / Sequoia)
+    if not parsed_metrics:
+        sp_metrics, _ = get_system_profiler_wifi_data()
+        if sp_metrics and sp_metrics.get("ssid"):
+            parsed_metrics = {
+                "ssid": sp_metrics.get("ssid", ""),
+                "bssid": sp_metrics.get("bssid", ""),
+                "state": sp_metrics.get("state", "running"),
+                "rssi": sp_metrics.get("rssi_dbm", -100),
+                "noise": sp_metrics.get("noise_dbm", -90),
+                "tx_rate": sp_metrics.get("tx_rate_mbps", 0.0),
+                "channel_raw": sp_metrics.get("channel", "unknown"),
+                "primary_channel": sp_metrics.get("primary_channel", 0),
+                "band": sp_metrics.get("band", "Unknown"),
+            }
+
+    # If neither airport nor system_profiler found metrics
+    if not parsed_metrics:
         wifi_info = get_current_wifi_details()
         ssid = wifi_info.get("SSID", "")
         gateway = get_default_gateway()
         hotspot = is_hotspot_active(gateway, ssid)
-        
+
         if hotspot:
             directive_parts.append(HOTSPOT_DIRECTIVE)
 
@@ -346,58 +508,15 @@ def get_wifi_metrics() -> str:
         )
         return json.dumps({"raw_data": raw_data, "_llm_directive": " ".join(directive_parts)}, indent=2)
 
-    code, stdout, stderr, err = run_command([airport_bin, "-I"], timeout=10)
-
-    if code != 0 or not stdout.strip():
-        raw_data = {"error": err or stderr.strip() or "Failed to read airport metrics"}
-        directive_parts.append(
-            "Explain to the user that their Mac cannot read Wi-Fi details right now. "
-            "Ask them to ensure Wi-Fi is turned on in the top-right menu bar and connected "
-            "to their home network."
-        )
-        return json.dumps({"raw_data": raw_data, "_llm_directive": " ".join(directive_parts)}, indent=2)
-
-    # Parse key-value airport output
-    metrics: Dict[str, str] = {}
-    for line in stdout.splitlines():
-        if ":" in line:
-            k, v = line.split(":", 1)
-            metrics[k.strip()] = v.strip()
-
-    state = metrics.get("state", "unknown")
-    ssid = metrics.get("SSID", "")
-    bssid = metrics.get("BSSID", "")
-
-    # Parse numeric indicators
-    try:
-        rssi = int(metrics.get("agrCtlRSSI", metrics.get("RSSI", "-100")))
-    except ValueError:
-        rssi = -100
-
-    try:
-        noise = int(metrics.get("agrCtlNoise", metrics.get("Noise", "-90")))
-    except ValueError:
-        noise = -90
-
-    try:
-        tx_rate = float(metrics.get("lastTxRate", "0"))
-    except ValueError:
-        tx_rate = 0.0
-
-    channel_raw = metrics.get("channel", "unknown")
-    channel_match = re.match(r"(\d+)", channel_raw)
-    primary_channel = int(channel_match.group(1)) if channel_match else 0
-
-    # Determine band
-    if primary_channel <= 14:
-        band = "2.4 GHz"
-    elif 36 <= primary_channel <= 177:
-        band = "5 GHz"
-    elif primary_channel > 177:
-        band = "6 GHz (Wi-Fi 6E/7)"
-    else:
-        band = "Unknown"
-
+    ssid = parsed_metrics["ssid"]
+    bssid = parsed_metrics["bssid"]
+    state = parsed_metrics["state"]
+    rssi = parsed_metrics["rssi"]
+    noise = parsed_metrics["noise"]
+    tx_rate = parsed_metrics["tx_rate"]
+    channel_raw = parsed_metrics["channel_raw"]
+    primary_channel = parsed_metrics["primary_channel"]
+    band = parsed_metrics["band"]
     snr = rssi - noise
 
     raw_data = {
@@ -465,70 +584,58 @@ def scan_wifi_congestion() -> str:
     """
     airport_bin = get_airport_binary()
     directive_parts: List[str] = []
-
-    if not airport_bin:
-        raw_data = {"error": "The airport utility is unavailable on this macOS configuration."}
-        directive_parts.append(
-            "Explain to the user that macOS does not have the wireless scanning tool enabled. "
-            "Advise them that if they feel their Wi-Fi is crowded, they can open their router's "
-            "mobile app and look for an 'Auto Channel' or 'Channel Optimization' button."
-        )
-        return json.dumps({"raw_data": raw_data, "_llm_directive": " ".join(directive_parts)}, indent=2)
-
-    code, stdout, stderr, err = run_command([airport_bin, "-s"], timeout=15)
-
-    # Check for Location Services denial (common macOS security block)
-    loc_denied = (
-        "location" in (stderr + stdout).lower()
-        or "permission" in (stderr + stdout).lower()
-        or "not permitted" in (stderr + stdout).lower()
-        or (code != 0 and not stdout.strip())
-    )
-
-    if loc_denied:
-        raw_data = {
-            "error": "Location Services permission denied or unavailable",
-            "stderr": stderr.strip(),
-            "exit_code": code,
-        }
-        directive_parts.append(
-            "Explain to the user that macOS requires Location Services permission to scan nearby "
-            "Wi-Fi networks. Give them simple, numbered steps: Open System Settings > Privacy & "
-            "Security > Location Services, ensure Location Services is turned On, and ensure "
-            "Terminal (or their current app) is allowed."
-        )
-        return json.dumps({"raw_data": raw_data, "_llm_directive": " ".join(directive_parts)}, indent=2)
-
-    # Parse neighboring networks
-    # Format typically: SSID BSSID RSSI CHANNEL HT CC SECURITY...
     networks = []
     channel_counts: Dict[int, int] = {}
 
-    pattern = re.compile(r"([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})\s+([-\d]+)\s+([0-9,\+-]+)")
+    scanned_via_airport = False
+    if airport_bin:
+        code, stdout, stderr, err = run_command([airport_bin, "-s"], timeout=15)
+        loc_denied = (
+            "location" in (stderr + stdout).lower()
+            or "permission" in (stderr + stdout).lower()
+            or "not permitted" in (stderr + stdout).lower()
+            or (code != 0 and not stdout.strip())
+        )
+        if not loc_denied and code == 0 and stdout.strip():
+            scanned_via_airport = True
+            pattern = re.compile(r"([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})\s+([-\d]+)\s+([0-9,\+-]+)")
+            for line in stdout.splitlines():
+                match = pattern.search(line)
+                if not match:
+                    continue
+                bssid = match.group(1)
+                rssi = int(match.group(2))
+                chan_str = match.group(3)
+                ssid = line[:match.start()].strip()
+                primary_match = re.match(r"(\d+)", chan_str)
+                if not primary_match:
+                    continue
+                primary_ch = int(primary_match.group(1))
+                channel_counts[primary_ch] = channel_counts.get(primary_ch, 0) + 1
+                networks.append({
+                    "ssid": ssid or "<Hidden SSID>",
+                    "bssid": bssid,
+                    "rssi": rssi,
+                    "channel": primary_ch,
+                })
 
-    for line in stdout.splitlines():
-        match = pattern.search(line)
-        if not match:
-            continue
-        
-        bssid = match.group(1)
-        rssi = int(match.group(2))
-        chan_str = match.group(3)
-        ssid = line[:match.start()].strip()
-        
-        # Primary channel number
-        primary_match = re.match(r"(\d+)", chan_str)
-        if not primary_match:
-            continue
-        primary_ch = int(primary_match.group(1))
-        
-        channel_counts[primary_ch] = channel_counts.get(primary_ch, 0) + 1
-        networks.append({
-            "ssid": ssid or "<Hidden SSID>",
-            "bssid": bssid,
-            "rssi": rssi,
-            "channel": primary_ch,
-        })
+    # Fallback to system_profiler if airport scanning is unavailable or denied (macOS Sonoma / Sequoia)
+    if not scanned_via_airport:
+        _, sp_networks = get_system_profiler_wifi_data()
+        if sp_networks:
+            for net in sp_networks:
+                primary_ch = net.get("channel", 0)
+                if primary_ch > 0:
+                    channel_counts[primary_ch] = channel_counts.get(primary_ch, 0) + 1
+            networks = sp_networks
+        else:
+            raw_data = {"error": "Wi-Fi scanning is unavailable or restricted on this macOS configuration."}
+            directive_parts.append(
+                "Explain to the user that macOS does not have the wireless scanning tool enabled. "
+                "Advise them that if they feel their Wi-Fi is crowded, they can open their router's "
+                "mobile app and look for an 'Auto Channel' or 'Channel Optimization' button."
+            )
+            return json.dumps({"raw_data": raw_data, "_llm_directive": " ".join(directive_parts)}, indent=2)
 
     # Determine congestion and optimal channels
     # 2.4 GHz non-overlapping channels: 1, 6, 11
